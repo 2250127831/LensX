@@ -1,0 +1,27 @@
+target:
+  process: io_uring_test
+
+output:
+  csv: /tmp/io_uring_key_raw.csv
+
+probes:
+  - name: submit
+    type: uprobe
+    symbol: mark_submit
+    stage: 0
+    key: arg1
+  - name: complete
+    type: tracepoint
+    event: io_uring/io_uring_complete
+    stage: 1
+    key: ctx->user_data
+
+matchers:
+  - id: uring_flow
+    stages: [0, 1]
+    mode: key
+
+reports:
+  - name: submit_to_complete
+    from: 0
+    to: 1

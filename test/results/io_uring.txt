@@ -1,0 +1,18 @@
+LensX V2 — loading /home/qiwang/LensX/test/io_uring_key.yaml
+  target PID: 32747
+  BPF source: /tmp/lensx_vKQMQ1.c
+  BPF object: /tmp/lensx_vKQMQ1.bpf.o
+  uprobe submit               @ 0x15b0
+  tp     complete             io_uring/io_uring_complete
+  CSV raw data: /tmp/io_uring_key_raw.csv
+
+Collecting... (Ctrl+C to stop)
+
+=== Results ===
+
+submit_to_complete (512 samples):
+      1us - 2us     |##############################|      507 ( 99.0%)
+      2us - 4us     |#                             |        2 (  0.4%)
+      4us - 8us     |#                             |        2 (  0.4%)
+     32us - 65us    |#                             |        1 (  0.2%)
+  P50=1us  P90=1us  P99=1us  P999=6us

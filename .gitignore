@@ -1,0 +1,9 @@
+build/
+lensx
+lensx.bpf.o
+lensx.skel.h
+vmlinux.h
+test/c_test
+test/io_uring_test
+test/kretprobe_test
+*.o

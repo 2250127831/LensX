@@ -1,0 +1,78 @@
+target:
+  process: nebulaX
+
+output:
+  csv: /tmp/nebulaX_raw.csv
+
+probes:
+  - name: cqe
+    type: tracepoint
+    event: io_uring/io_uring_complete
+    stage: 0
+
+  - name: recv
+    type: uprobe
+    symbol: TcpServer::onRecv
+    stage: 1
+
+  - name: engine_new
+    type: uprobe
+    symbol: MatchingEngine::processNewOrder
+    stage: 3
+
+  - name: engine_cancel
+    type: uprobe
+    symbol: MatchingEngine::processCancel
+    stage: 3
+
+  - name: push
+    type: uprobe
+    symbol: lensx_mark_s4_ringpush
+    stage: 4
+
+  - name: consume
+    type: uprobe
+    symbol: lensx_mark_s5_consume
+    stage: 5
+
+  - name: send
+    type: uprobe
+    symbol: lensx_mark_s6_send
+    stage: 6
+
+matchers:
+  - id: io_flow
+    stages: [0, 1, 3, 4]
+    mode: seq
+
+  - id: send_flow
+    stages: [5, 6]
+    mode: seq
+
+  - id: ring_queue
+    stages: [4, 5]
+    mode: fifo
+
+  - id: e2e
+    stages: [0, 6]
+    mode: fifo
+
+reports:
+  - name: dispatch
+    from: 0
+    to: 1
+  - name: io_total
+    from: 1
+    to: 4
+  - name: engine
+    from: 3
+    to: 4
+  - name: ring
+    from: 4
+    to: 5
+  - name: send_prep
+    from: 5
+    to: 6
+  - name: e2e
+    from: 0
+    to: 6

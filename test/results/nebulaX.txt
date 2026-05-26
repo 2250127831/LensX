@@ -1,0 +1,46 @@
+LensX V2 — loading /home/qiwang/LensX/test/nebulaX.yaml
+  target PID: 32399
+  BPF source: /tmp/lensx_VJCvnD.c
+  BPF object: /tmp/lensx_VJCvnD.bpf.o
+  tp     cqe                  io_uring/io_uring_complete
+  uprobe recv                 @ 0x76d0
+  uprobe engine_new           @ 0x46f0
+  uprobe engine_cancel        @ 0x4660
+  uprobe push                 @ 0x3800
+  uprobe consume              @ 0x3810
+  uprobe send                 @ 0x3820
+  CSV raw data: /tmp/nebulaX_raw.csv
+
+Collecting... (Ctrl+C to stop)
+
+=== Results ===
+
+dispatch (46 samples):
+    512ns - 1us     |##############################|       34 ( 73.9%)
+      1us - 2us     |##########                    |       12 ( 26.1%)
+  P50=768ns  P90=1us  P99=1us  P999=1us
+
+io_total (46 samples):
+    262us - 524us   |##############################|       28 ( 60.9%)
+    524us - 1ms     |###################           |       18 ( 39.1%)
+  P50=393us  P90=786us  P99=786us  P999=786us
+
+engine (46 samples):
+      2us - 4us     |##############################|       26 ( 56.5%)
+      4us - 8us     |#######################       |       20 ( 43.5%)
+  P50=3us  P90=6us  P99=6us  P999=6us
+
+ring (23 samples):
+      2us - 4us     |##############################|       22 ( 95.7%)
+      4us - 8us     |#                             |        1 (  4.3%)
+  P50=3us  P90=3us  P99=3us  P999=3us
+
+send_prep (46 samples):
+      1us - 2us     |##############################|       44 ( 95.7%)
+      2us - 4us     |#                             |        2 (  4.3%)
+  P50=1us  P90=1us  P99=3us  P999=3us
+
+e2e (23 samples):
+    262us - 524us   |##############################|       13 ( 56.5%)
+    524us - 1ms     |#######################       |       10 ( 43.5%)
+  P50=393us  P90=786us  P99=786us  P999=786us

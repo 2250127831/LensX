@@ -1,0 +1,35 @@
+target:
+  process: redis-server
+
+output:
+  csv: /tmp/redis_raw.csv
+
+probes:
+  - name: recv_cmd
+    type: uprobe
+    symbol: readQueryFromClient
+    stage: 0
+  - name: exec_cmd
+    type: uprobe
+    symbol: processCommand
+    stage: 1
+  - name: send_reply
+    type: uprobe
+    symbol: addReply
+    stage: 2
+
+matchers:
+  - id: redis_flow
+    stages: [0, 1, 2]
+    mode: seq
+
+reports:
+  - name: parse
+    from: 0
+    to: 1
+  - name: execute
+    from: 1
+    to: 2
+  - name: e2e
+    from: 0
+    to: 2

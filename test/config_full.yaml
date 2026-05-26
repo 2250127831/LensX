@@ -1,0 +1,175 @@
+# LensX V2 — 完整配置示例
+# 涵盖所有探针类型、配对模式和输出选项
+
+# ═══════════════════════════════════════════════════════
+# key 模式快速指南
+#
+# ── key 是什么 ──
+#   LensX 的事件结构体里固定有一个 __u64 key 字段（8 字节），
+#   默认为 0。你只需要告诉 LensX"从这个位置读 key"。
+#   如果读到的值不足 64 位，自动零扩展。
+#
+# ── 如何给程序加上 key（推荐方式）──
+#   在自己的源码里加一个带 id 参数的空包装函数：
+#
+#     __attribute__((noinline)) void lensx_mark(int stage, uint64_t id) {}
+#
+#   在每个要打点的地方调用它：
+#     lensx_mark(0, request_id);  // 开始
+#     lensx_mark(1, request_id);  // 处理中
+#     lensx_mark(2, request_id);  // 结束
+#
+#   YAML 里配 key: arg1，第一个参数 stage 不是 key，
+#   但 PT_REGS_PARM1 读的是 arg1，所以 key 实际取的是 stage。
+#   这样的话 id 在第二个参数，要用 arg2。
+#
+#   更简单的办法：去掉 stage 参数，只传 id：
+#
+#     __attribute__((noinline)) void trace_start(uint64_t id) {}
+#     __attribute__((noinline)) void trace_end(uint64_t id) {}
+#
+#     trace_start(request_id);
+#     // ... 处理 ...
+#     trace_end(request_id);
+#
+#   然后每个 probe 都用 key: arg1 读取 id。
+#   这就是 test/c_test.c 用 mark_s0/mark_s1/mark_s2 的模式。
+#
+# ── 为什么不直接读复杂函数的参数 ──
+#   因为请求 ID 不一定恰好在前两个参数位置。与其支持 arg3/arg4，
+#   不如用户加一个专用的空函数，把 id 放在第一个参数。
+#   快、稳、不依赖函数签名。
+#
+# ── tracepoint 的 key ──
+#   key: ctx-><字段名>
+#     字段列表：cat /sys/kernel/debug/tracing/events/<cat>/<event>/format
+#     如 io_uring_complete → ctx->user_data
+#
+# ── 验证 ──
+#   先用 seq 模式确认探针能触发。开 key 模式后检查 CSV 的 key 列，
+#   同一请求的多个事件的 key 值应相同。
+# ═══════════════════════════════════════════════════════
+target:
+  process: nebulaX
+  # PID 由命令行 --pid 传入，配置里只写进程名
+
+output:
+  csv: /tmp/lensx_output.csv
+  # 可选：所有原始数据逐条写入 CSV
+  # 格式：from_stage,to_stage,delta_ns,ts_from,ts_to,tid
+
+# ── 探针 ─────────────────────────────────────────────
+probes:
+
+  # tracepoint：内核预定义事件
+  - name: cqe
+    type: tracepoint
+    event: io_uring/io_uring_complete
+    stage: 0
+    # key 提取：ctx-><字段名>
+    # 字段列表查 /sys/kernel/debug/tracing/events/<cat>/<event>/format
+    # key: ctx->user_data
+
+  # uprobe：用户态函数
+  - name: recv
+    type: uprobe
+    symbol: TcpServer::onRecv
+    stage: 1
+    # key 提取：arg1 = 第一个参数, arg2 = 第二个参数
+    # 查看函数签名用 nm -C <binary> | grep <symbol>
+    # key: arg1
+
+  # 多个探针可以映射到同一个 stage
+  - name: engine_new
+    type: uprobe
+    symbol: MatchingEngine::processNewOrder
+    stage: 3
+
+  - name: engine_cancel
+    type: uprobe
+    symbol: MatchingEngine::processCancel
+    stage: 3
+
+  - name: push
+    type: uprobe
+    symbol: lensx_mark_s4_ringpush
+    stage: 4
+
+  - name: consume
+    type: uprobe
+    symbol: lensx_mark_s5_consume
+    stage: 5
+
+  - name: send
+    type: uprobe
+    symbol: lensx_mark_s6_send
+    stage: 6
+
+  # kprobe：内核函数入口（系统级）
+  # - name: tcp_send
+  #   type: kprobe
+  #   symbol: tcp_sendmsg
+  #   stage: 7
+
+  # kretprobe：内核函数返回
+  # - name: tcp_send_ret
+  #   type: kretprobe
+  #   symbol: tcp_sendmsg
+  #   stage: 8
+
+# ── 配对规则 ─────────────────────────────────────────
+matchers:
+
+  # seq：同一线程上按到达顺序配对
+  - id: io_flow
+    stages: [0, 1, 3, 4]
+    mode: seq
+    # 同 tid 上收齐所有 stage 后触发。
+    # 每个 stage 在每组中只算最后一次出现。
+
+  # seq：send 线程独立配对
+  - id: send_flow
+    stages: [5, 6]
+    mode: seq
+
+  # fifo：两个 seq 组通过队列跨线程配对
+  - id: ring_queue
+    stages: [4, 5]
+    mode: fifo
+    queue_size: 4096
+    # 组 A 完成时 ts[4] 入队，组 B 完成时 ts[5] 出队配对
+    # 前置条件：两个线程之间的通道必须是严格 FIFO
+
+  - id: e2e
+    stages: [0, 6]
+    mode: fifo
+    queue_size: 4096
+
+  # key：按请求 ID 配对
+  # - id: by_request
+  #   stages: [0, 1, 2]
+  #   mode: key
+  #   需要探针配了 key: arg1 / key: ctx->xxx，且各探针提取到
+  #   同一个 ID 值（比如 io_uring 的 user_data、HTTP 的请求号）。
+  #   不依赖线程也不依赖到达顺序，唯一条件是所有探针的 key 相同。
+
+# ── 输出报告 ─────────────────────────────────────────
+reports:
+  - name: dispatch
+    from: 0
+    to: 1
+  - name: io_total
+    from: 1
+    to: 4
+  - name: engine
+    from: 3
+    to: 4
+  - name: ring
+    from: 4
+    to: 5
+  - name: send_prep
+    from: 5
+    to: 6
+  - name: e2e
+    from: 0
+    to: 6

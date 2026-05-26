@@ -1,0 +1,27 @@
+LensX V2 — loading /home/qiwang/LensX/test/redis.yaml
+  target PID: 32495
+  BPF source: /tmp/lensx_hnth6T.c
+  BPF object: /tmp/lensx_hnth6T.bpf.o
+  uprobe recv_cmd             @ 0x5e0f0
+  uprobe exec_cmd             @ 0x48880
+  uprobe send_reply           @ 0x5ac80
+  CSV raw data: /tmp/redis_raw.csv
+
+Collecting... (Ctrl+C to stop)
+
+=== Results ===
+
+parse (6 samples):
+      8us - 16us    |##############################|        4 ( 66.7%)
+     16us - 32us    |###############               |        2 ( 33.3%)
+  P50=12us  P90=24us  P99=24us  P999=24us
+
+execute (6 samples):
+      4us - 8us     |##############################|        6 (100.0%)
+  P50=6us  P90=6us  P99=6us  P999=6us
+
+e2e (6 samples):
+      8us - 16us    |##############################|        2 ( 33.3%)
+     16us - 32us    |##############################|        2 ( 33.3%)
+     32us - 65us    |##############################|        2 ( 33.3%)
+  P50=24us  P90=49us  P99=49us  P999=49us

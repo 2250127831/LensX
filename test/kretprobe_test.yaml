@@ -1,0 +1,25 @@
+target:
+  process: kretprobe_test
+
+output:
+  csv: /tmp/kretprobe_test_raw.csv
+
+probes:
+  - name: read_entry
+    type: kprobe
+    symbol: __x64_sys_read
+    stage: 0
+  - name: read_exit
+    type: kretprobe
+    symbol: __x64_sys_read
+    stage: 1
+
+matchers:
+  - id: read_time
+    stages: [0, 1]
+    mode: seq
+
+reports:
+  - name: read_syscall
+    from: 0
+    to: 1
