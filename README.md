@@ -1,90 +1,68 @@
-# LensX V1 — eBPF per-request latency decomposition
+# LensX
 
-## 解决的问题
+eBPF 配置驱动的延迟追踪工具。写 YAML 声明探针位置和配对规则，LensX 自动生成 BPF 代码、编译、附着、采集、配对、出报告。
 
-高频交易引擎的性能瓶颈往往藏在软件栈的"连接处"——内核到用户态的调度、线程之间的通信、数据在不同组件间的流转。常规 profiling 工具（perf、火焰图）只能看到 CPU 时间花在哪，回答不了"这个请求从网卡到应用到底走了多远、哪一段最慢"。
-
-LensX V1 用 eBPF 在一条请求的全路径上打时间戳，从内核 IO 完成一路追踪到数据被发回网络，把每一段延迟拆开来看。
-
-## 架构
-
-7 个探针，6 段延迟链：
-
-```
-IO 线程                      Send 线程
-CQE ─→ onRecv ─→ match ─→ push ─→ consume ─→ send ─→ 网卡
- S0       S1        S3       S4        S5        S6
+```bash
+lensx run test/redis.yaml --pid $(pgrep redis-server)
 ```
 
-| 段 | 测什么 | 探针类型 |
-|----|--------|----------|
-| S0→S1 | 内核→用户态调度延迟 | tracepoint + uprobe |
-| S1→S4 | IO 线程总处理时间（含撮合）| uprobe × 3 |
-| S3→S4 | 撮合引擎最后一步 | uprobe |
-| S4→S5 | 跨线程 ring 排队 | uprobe（含 FIFO 顺序配对）|
-| S5→S6 | 发送准备 | uprobe |
-| S0→S6 | 端到端全链路 | 综合 |
+## 探针
 
-关键设计：IO 线程和 Send 线程各跑在固定 tid 上，通过 SPSC ring 的 FIFO 特性做跨线程顺序配对，不需要请求 ID。
+| 类型 | 写法 | 用途 |
+|------|------|------|
+| uprobe | `type: uprobe / symbol: <函数名>` | 用户态函数 |
+| kprobe | `type: kprobe / symbol: <内核函数>` | 内核函数入口 |
+| kretprobe | `type: kretprobe / symbol: <内核函数>` | 内核函数返回 |
+| tracepoint | `type: tracepoint / event: <分类/事件名>` | 内核预定义事件 |
 
-## 测量结果
+## 配对模式
 
-两种负载场景。
+同一请求的多个事件散在不同探针和线程里，配对是 LensX 的核心：
 
-### 轻量负载
+| 模式 | 原理 | 适用场景 |
+|------|------|---------|
+| seq | 同一 tid 按到达顺序配对 | 单线程流水线（Redis） |
+| fifo | 两组 seq 通过 FIFO 队列关联 | 生产者-消费者（NebulaX SPSC ring）|
+| key | 按请求 ID 分组，跨线程不依赖顺序 | 跨线程/跨进程（io_uring） |
 
-单连接 pipeline 发送 5000 笔 NEW 订单，TCP 合并后每批约 100-200 笔。
+## 用法
 
-```
-S0→S1  dispatch:  P50=767ns   P99=1us       # 调度延迟稳定
-S1→S4  IO total:  P50=393us   P99=786us     # 批处理 200 笔的总耗时
-S3→S4  engine:    P50=6us     P99=6us        # 撮合引擎不随批大小增加
-S5→S6  send:      P50=1us     P99=3us        # 发送准备
-S4→S5  ring:      P50=3ms     P99=3ms        # 🔥 跨线程排队，低负载时主要瓶颈
-S0→S6  e2e:       P50=3ms     P99=6ms        # 全链路 3-6ms
-```
+```bash
+# 编译
+cmake -B build && cmake --build build
 
-样本量：~80（IO 线程）+ ~75（Send 线程 + 跨线程）。
+# 按进程名追踪
+sudo ./build/lensx run test/nebulaX.yaml
 
-### 高负载
+# 按 PID 追踪（覆盖配置里的 process 名）
+sudo ./build/lensx run test/redis.yaml --pid 12345
 
-4 连接并行 pipeline，50M 笔混合命令（50% NEW + 25% CANCEL + 25% BOOK），总耗时约 3 分钟。
-
-```
-S0→S1  dispatch:  P50=767ns   P99=1us       # 调度延迟不变，与负载无关
-S1→S4  IO total:  P50=98us    P99=196us     # 负载高时 IO 批处理更快（流水线饱满）
-S3→S4  engine:    P50=1us     P99=3us        # 撮合引擎不是瓶颈
-S5→S6  send:      P50=3us     P99=3us        # 发送准备不受负载影响
-S4→S5  ring:      P50=1us     P99=402ms      # 🔥 中位数 1us 但长尾 400ms
-S0→S6  e2e:       P50=98us    P99=402ms      # 中位数 0.1ms，长尾 400ms
+# CSV 原始数据输出（在 YAML 里配 output.csv）
+sudo ./build/lensx run test/nebulaX.yaml
+cat /tmp/nebulaX_raw.csv
 ```
 
-样本量：31 万（IO 线程）+ 116 万（Send 线程）+ 30 万（跨线程配对）。
+## 验证
 
-### 对比总结
+5 个测试场景全部通过，V1（硬编码）和 V2（配置驱动）交叉验证数据一致。实测数据保存在 `test/results/`。
 
-| 链 | 轻载中位数 | 高载中位数 | 轻载 P99 | 高载 P99 |
-|----|-----------|-----------|---------|---------|
-| S0→S1 | 767ns | 767ns | 1us | 1us |
-| S1→S4 | 393us | 98us | 786us | 196us |
-| S3→S4 | 6us | 1us | 6us | 3us |
-| S5→S6 | 1us | 3us | 3us | 3us |
-| **S4→S5** | **3ms** | **1us** | **3ms** | **402ms** |
-| S0→S6 | 3ms | 98us | 6ms | 402ms |
+| 测试 | 配对 | 样本 | 说明 |
+|------|------|------|------|
+| NebulaX 全链路 | seq+fifo | 6 段延迟 | 双线程，IO+Send |
+| Redis | seq | parse=12us exec=3us | 单线程，第三方项目 |
+| c_test | key | 8000 对 | 多线程并发 key 配对 |
+| io_uring | key | 512 对 | 跨内核，uprobe↔tracepoint |
+| kretprobe | kprobe→kretprobe | 206K | read 系统调用耗时 |
 
-S1→S4 在高负载下中位数反而更小（393us → 98us），因为流水线饱满时每一批处理更多命令，固定开销被摊薄。S4→S5 的对比揭示了一个典型的两面性：流水线跑满时跨线程几乎零延迟（1us），但高负载下 Send 线程偶尔生产慢于 IO 线程（SEND_ZC 等待 CQE、TCP 背压），ring 填满后 IO 线程在 `ring.push()` 中自旋，导致后续请求的 S4→S5 包含了等 ring 空间的排队时间。
+## 依赖
 
-## 关键结论
+- clang（运行时编译 BPF）
+- libyaml-cpp-dev
+- libelf、zlib
+- bpftool（生成 vmlinux.h）
+- Linux 内核 5.8+（BPF CO-RE）
 
-1. **撮合引擎不是瓶颈。** 从引擎入口到 pushResponses 的 P50=1-6us，无论负载高低。整个 IO 线程的处理时间（S1→S4）几乎全部花在协议解析和批处理上。
+## 分支
 
-2. **跨线程通信是 NebulaX 最大的延迟源。** S4→S5（push→consume）在低负载时的中位数是 3ms（Send 线程从休眠中被 eventfd 唤醒的代价），高负载时中位数降到 1us（流水线填满后 Send 线程持续活跃），但 P99 飙升到 402ms。S4→S5 测的就是排队延迟——数据从 push 到 pop 在 ring 里的等待时间。高负载下 Send 线程偶尔生产跟不上（SEND_ZC 阻塞等 CQE，或 TCP 背压），ring 填满后 IO 线程在 `ring.push()` 里自旋，S4 在自旋前标记，导致 S4→S5 包含了等 ring 空间的时间。这与 Phase 6 遇到的 ring 压力问题一致。
-
-3. **端到端中位数在负载足够时仅为 98us，但长尾全部集中在 Send 线程的排队上。** 优化方向：减少或消除 Send 线程的事件通知延迟，比如用 busy-polling 替代 eventfd，或者把发送逻辑合入 IO 线程成为一个单线程流水线。
-
-## V1 局限
-
-- 探针固定写死在 NebulaX 的符号上，不具备通用性
-- 跨线程 FIFO 配对依赖 SPSC ring 的严格顺序，且 FIFO 深度限制（4096）在极端高负载下有溢出风险
-- S3 只记录最后一笔引擎调用，批处理中多笔命令的逐笔延迟不可见
-- 输出是汇总直方图，没有逐请求的原始轨迹
+- `main` — V2 配置驱动版（当前）
+- `v1` — V1 硬编码版（NebulaX 专用，存档）
